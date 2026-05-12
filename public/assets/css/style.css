@@ -1,0 +1,42 @@
+/* ── assets/css/style.css ────────────────────────────────── */
+
+/* Brand purple */
+.bg-purple { background-color: #752282 !important; }
+.text-purple { color: #752282 !important; }
+
+/* Item cards */
+.item-card {
+    border-radius: 14px !important;
+    transition: box-shadow 0.15s, transform 0.15s;
+    color: inherit;
+}
+.item-card:hover {
+    box-shadow: 0 4px 16px rgba(117, 34, 130, 0.12);
+    transform: translateY(-1px);
+}
+
+/* Smooth tap on mobile */
+@media (hover: none) {
+    .item-card:active {
+        opacity: 0.8;
+        transform: none;
+    }
+}
+
+/* Object fit for images */
+.object-fit-cover { object-fit: cover; }
+
+/* Min width 0 fix for flex truncation */
+.min-width-0 { min-width: 0; }
+
+/* Bottom note bar */
+.bottom-note {
+    position: sticky;
+    bottom: 0;
+    background: #fff;
+    border-top: 1px solid #e5e5e5;
+    padding: 10px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: #666;
+}
