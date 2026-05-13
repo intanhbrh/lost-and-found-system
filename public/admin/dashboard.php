@@ -1,59 +1,77 @@
 <?php
-// ── public/admin/dashboard.php ──────────────────────────────
-// Admin dashboard — view and manage all found items
+// ============================================================
+// public/admin/dashboard.php
+// Admin dashboard — view, mark collected, and delete items
+// Security Foyer staff only
+// ============================================================
 
 require_once '../../app/admin_auth.php';
 require_once '../../app/db.php';
+require_once '../../app/helpers.php';
 
 requireAdminSession();
 $admin = getAdmin();
 
-// Handle delete
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
-    $del_id = intval($_POST['delete_id']);
+$message      = '';
+$message_type = 'success';
 
-    // Get photo path to delete file
-    $stmt = $pdo->prepare("SELECT photo_path FROM found_items WHERE item_id = ?");
-    $stmt->execute([$del_id]);
-    $row = $stmt->fetch();
+// ── Handle POST actions ──────────────────────────────────────
 
-    if ($row && $row['photo_path']) {
-        $file = '../' . ltrim($row['photo_path'], '/');
-        if (file_exists($file)) unlink($file);
+// Mark item as collected
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'collect') {
+    $item_id = intval($_POST['item_id'] ?? 0);
+    if ($item_id > 0) {
+        $pdo->prepare("UPDATE found_items SET status = 'collected' WHERE item_id = ?")
+            ->execute([$item_id]);
+        logAction($pdo, $admin['id'], 'mark_collected', $item_id, 'Marked as collected by owner');
+        $message = 'Item marked as collected.';
     }
-
-    $pdo->prepare("DELETE FROM found_items WHERE item_id = ?")->execute([$del_id]);
-
-    // Log action
-    $pdo->prepare("INSERT INTO audit_log (admin_id, action, item_id, note) VALUES (?,?,?,?)")
-        ->execute([$admin['id'], 'delete_item', $del_id, 'Item removed by admin']);
-
-    header("Location: dashboard.php?deleted=1");
-    exit;
 }
 
-// Handle mark as collected
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['collect_id'])) {
-    $col_id = intval($_POST['collect_id']);
-    $pdo->prepare("UPDATE found_items SET status='collected' WHERE item_id = ?")->execute([$col_id]);
+// Delete item
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'delete') {
+    $item_id = intval($_POST['item_id'] ?? 0);
+    if ($item_id > 0) {
+        // Get photo path before deleting
+        $row = $pdo->prepare("SELECT photo_path FROM found_items WHERE item_id = ?");
+        $row->execute([$item_id]);
+        $photo = $row->fetchColumn();
 
-    $pdo->prepare("INSERT INTO audit_log (admin_id, action, item_id, note) VALUES (?,?,?,?)")
-        ->execute([$admin['id'], 'mark_collected', $col_id, 'Marked as collected by owner']);
+        // Delete from DB
+        $pdo->prepare("DELETE FROM found_items WHERE item_id = ?")->execute([$item_id]);
 
-    header("Location: dashboard.php?collected=1");
-    exit;
+        // Delete photo file from disk
+        if ($photo) deletePhotoFile($photo);
+
+        logAction($pdo, $admin['id'], 'delete_item', $item_id, 'Item permanently deleted');
+        $message      = 'Item deleted.';
+        $message_type = 'warning';
+    }
 }
 
-// Fetch all items
-$items = $pdo->query(
-    "SELECT fi.*, c.name AS category_name
-     FROM found_items fi
-     JOIN categories c ON fi.category_id = c.category_id
-     ORDER BY fi.created_at DESC"
-)->fetchAll();
+// ── Fetch all items ──────────────────────────────────────────
+$filter = $_GET['filter'] ?? 'all';
+$allowed_filters = ['all', 'available', 'collected'];
+if (!in_array($filter, $allowed_filters, true)) $filter = 'all';
 
-$available  = array_filter($items, fn($i) => $i['status'] === 'available');
-$collected  = array_filter($items, fn($i) => $i['status'] === 'collected');
+$sql    = "SELECT fi.*, c.name AS cat_name, c.icon
+           FROM found_items fi
+           JOIN categories c ON fi.category_id = c.category_id";
+$params = [];
+
+if ($filter !== 'all') {
+    $sql    .= " WHERE fi.status = ?";
+    $params[] = $filter;
+}
+$sql .= " ORDER BY fi.created_at DESC";
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$items = $stmt->fetchAll();
+
+// Stats
+$available_count = $pdo->query("SELECT COUNT(*) FROM found_items WHERE status = 'available'")->fetchColumn();
+$collected_count = $pdo->query("SELECT COUNT(*) FROM found_items WHERE status = 'collected'")->fetchColumn();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -61,129 +79,191 @@ $collected  = array_filter($items, fn($i) => $i['status'] === 'collected');
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Dashboard — Lost &amp; Found</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.4.0/dist/tabler-icons.min.css">
     <link rel="stylesheet" href="../assets/css/style.css">
+    <style>
+        body { background: #f0f0f5; }
+        .topbar { background: #1a1a2e; }
+        .stat-card { border-radius: 14px; border: none; }
+        .item-row { transition: background 0.15s; }
+        .item-row:hover { background: #fafafa; }
+        .thumb-sm {
+            width: 48px;
+            height: 48px;
+            border-radius: 10px;
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+        .thumb-icon-sm {
+            width: 48px;
+            height: 48px;
+            border-radius: 10px;
+            background: #EEEDFE;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .thumb-icon-sm i { font-size: 22px; color: #534AB7; }
+    </style>
 </head>
-<body style="background:#f4f4f8;">
+<body>
 
-<!-- TOP NAV -->
-<nav class="navbar navbar-dark px-3" style="background:#752282;">
-    <span class="navbar-brand mb-0">
-        <i class="ti ti-shield-lock me-1"></i> Admin — Lost &amp; Found
-    </span>
-    <div class="d-flex align-items-center gap-3">
-        <span class="text-white-50 small"><?= htmlspecialchars($admin['name']) ?></span>
-        <a href="add.php" class="btn btn-sm btn-light fw-semibold">
-            <i class="ti ti-plus me-1"></i> Add item
+<!-- ── TOP NAV ─────────────────────────────────────────────── -->
+<nav class="navbar topbar shadow-sm px-3 py-2">
+    <div class="d-flex align-items-center gap-2">
+        <i class="ti ti-shield-lock text-white" style="font-size:22px;"></i>
+        <div>
+            <p class="mb-0 text-white-50" style="font-size:11px;line-height:1;">Security Foyer</p>
+            <span class="text-white fw-semibold" style="font-size:15px;">Admin Dashboard</span>
+        </div>
+    </div>
+    <div class="d-flex gap-2 align-items-center ms-auto">
+        <a href="add.php" class="btn btn-sm fw-semibold" style="background:#752282;color:#fff;border-radius:8px;">
+            <i class="ti ti-plus me-1"></i>Add item
         </a>
-        <a href="logout.php" class="btn btn-sm btn-outline-light">Logout</a>
+        <a href="logout.php" class="btn btn-sm btn-outline-light" style="border-radius:8px;font-size:12px;">
+            Logout
+        </a>
     </div>
 </nav>
 
 <div class="container-fluid px-3 py-3" style="max-width:700px;margin:0 auto;">
 
-    <!-- Alerts -->
-    <?php if (isset($_GET['added'])): ?>
-        <div class="alert alert-success small py-2">Item added successfully.</div>
-    <?php endif; ?>
-    <?php if (isset($_GET['deleted'])): ?>
-        <div class="alert alert-warning small py-2">Item deleted.</div>
-    <?php endif; ?>
-    <?php if (isset($_GET['collected'])): ?>
-        <div class="alert alert-info small py-2">Item marked as collected.</div>
+    <!-- Flash message -->
+    <?php if ($message): ?>
+        <div class="alert alert-<?= $message_type === 'warning' ? 'warning' : 'success' ?> alert-dismissible fade show py-2 mb-3"
+             style="font-size:13px;border-radius:10px;" role="alert">
+            <?= htmlspecialchars($message, ENT_QUOTES, 'UTF-8') ?>
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
     <?php endif; ?>
 
     <!-- Stats -->
-    <div class="row g-2 mb-3">
+    <div class="row g-3 mb-3">
         <div class="col-6">
-            <div class="card border text-center py-3">
-                <div class="fw-bold" style="font-size:28px;color:#752282;"><?= count($available) ?></div>
-                <div class="small text-muted">Available items</div>
+            <div class="card stat-card shadow-sm text-center py-3">
+                <div class="fw-bold mb-1" style="font-size:32px;color:#752282;">
+                    <?= $available_count ?>
+                </div>
+                <div class="text-muted" style="font-size:12px;">
+                    <i class="ti ti-package me-1"></i>Available items
+                </div>
             </div>
         </div>
         <div class="col-6">
-            <div class="card border text-center py-3">
-                <div class="fw-bold" style="font-size:28px;color:#198754;"><?= count($collected) ?></div>
-                <div class="small text-muted">Collected items</div>
+            <div class="card stat-card shadow-sm text-center py-3">
+                <div class="fw-bold mb-1" style="font-size:32px;color:#0F6E56;">
+                    <?= $collected_count ?>
+                </div>
+                <div class="text-muted" style="font-size:12px;">
+                    <i class="ti ti-check me-1"></i>Collected total
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Items table -->
-    <div class="card border">
-        <div class="card-header d-flex justify-content-between align-items-center py-2">
-            <span class="fw-semibold small">All found items</span>
-            <a href="add.php" class="btn btn-sm fw-semibold" style="background:#752282;color:#fff;">
-                <i class="ti ti-plus me-1"></i> Add item
+    <!-- Filter tabs -->
+    <div class="d-flex gap-2 mb-3">
+        <?php foreach (['all' => 'All', 'available' => 'Available', 'collected' => 'Collected'] as $key => $label): ?>
+            <a href="?filter=<?= $key ?>"
+               class="btn btn-sm <?= $filter === $key ? 'text-white' : 'btn-outline-secondary' ?>"
+               style="<?= $filter === $key ? 'background:#1a1a2e;border-color:#1a1a2e;' : '' ?>border-radius:8px;font-size:12px;">
+                <?= $label ?>
             </a>
-        </div>
-        <div class="card-body p-0">
-            <?php if (empty($items)): ?>
-                <p class="text-center text-muted py-4 small">No items yet. Add one above.</p>
-            <?php else: ?>
-                <?php foreach ($items as $item): ?>
-                    <div class="d-flex align-items-center gap-3 px-3 py-2 border-bottom">
+        <?php endforeach; ?>
+        <span class="ms-auto text-muted align-self-center" style="font-size:12px;">
+            <?= count($items) ?> item<?= count($items) !== 1 ? 's' : '' ?>
+        </span>
+    </div>
 
-                        <!-- Photo -->
-                        <?php if ($item['photo_path']): ?>
-                            <img src="../<?= htmlspecialchars($item['photo_path']) ?>"
-                                 class="rounded-2 object-fit-cover flex-shrink-0"
-                                 style="width:46px;height:46px;">
-                        <?php else: ?>
-                            <div class="rounded-2 flex-shrink-0 d-flex align-items-center justify-content-center"
-                                 style="width:46px;height:46px;background:#EEEDFE;">
-                                <i class="ti ti-package" style="color:#534AB7;font-size:20px;"></i>
-                            </div>
-                        <?php endif; ?>
+    <!-- Items list -->
+    <div class="card border shadow-sm" style="border-radius:14px;overflow:hidden;">
 
-                        <!-- Info -->
-                        <div class="flex-grow-1 min-width-0">
-                            <div class="fw-semibold small text-truncate">
-                                <?= htmlspecialchars($item['item_name']) ?>
-                            </div>
-                            <div class="text-muted" style="font-size:11px;">
-                                <?= htmlspecialchars($item['category_name']) ?>
-                                · <?= htmlspecialchars($item['location_found']) ?>
-                                · <?= date('d M Y', strtotime($item['date_found'])) ?>
-                            </div>
+        <?php if (empty($items)): ?>
+            <div class="text-center text-muted py-5">
+                <i class="ti ti-inbox" style="font-size:40px;"></i>
+                <p class="mt-2 mb-0" style="font-size:13px;">No items found.</p>
+            </div>
+        <?php else: ?>
+            <?php foreach ($items as $i => $item): ?>
+                <div class="item-row d-flex align-items-center gap-3 px-3 py-2
+                            <?= $i > 0 ? 'border-top' : '' ?>">
+
+                    <!-- Thumb -->
+                    <?php if ($item['photo_path']): ?>
+                        <img src="../<?= htmlspecialchars($item['photo_path'], ENT_QUOTES, 'UTF-8') ?>"
+                             alt="" class="thumb-sm">
+                    <?php else: ?>
+                        <div class="thumb-icon-sm">
+                            <i class="ti <?= htmlspecialchars($item['icon'], ENT_QUOTES, 'UTF-8') ?>"></i>
                         </div>
+                    <?php endif; ?>
 
-                        <!-- Status + actions -->
-                        <div class="d-flex flex-column align-items-end gap-1 flex-shrink-0">
-                            <span class="badge rounded-pill
-                                <?= $item['status'] === 'available' ? 'bg-success' : 'bg-secondary' ?>
-                                " style="font-size:10px;">
-                                <?= ucfirst($item['status']) ?>
-                            </span>
-                            <div class="d-flex gap-1">
-                                <?php if ($item['status'] === 'available'): ?>
-                                    <form method="POST" class="d-inline">
-                                        <input type="hidden" name="collect_id" value="<?= $item['item_id'] ?>">
-                                        <button class="btn btn-outline-success btn-sm py-0 px-2"
-                                                style="font-size:11px;"
-                                                onclick="return confirm('Mark as collected?')">
-                                            <i class="ti ti-check"></i>
-                                        </button>
-                                    </form>
-                                <?php endif; ?>
-                                <form method="POST" class="d-inline">
-                                    <input type="hidden" name="delete_id" value="<?= $item['item_id'] ?>">
-                                    <button class="btn btn-outline-danger btn-sm py-0 px-2"
-                                            style="font-size:11px;"
-                                            onclick="return confirm('Delete this item permanently?')">
-                                        <i class="ti ti-trash"></i>
+                    <!-- Info -->
+                    <div class="flex-grow-1 min-width-0">
+                        <div class="fw-semibold text-dark text-truncate" style="font-size:13px;">
+                            <?= htmlspecialchars($item['item_name'], ENT_QUOTES, 'UTF-8') ?>
+                        </div>
+                        <div class="text-muted text-truncate" style="font-size:11px;">
+                            <?= htmlspecialchars($item['cat_name'], ENT_QUOTES, 'UTF-8') ?>
+                            &middot; <?= htmlspecialchars($item['location_found'], ENT_QUOTES, 'UTF-8') ?>
+                            &middot; <?= formatDate($item['date_found']) ?>
+                        </div>
+                    </div>
+
+                    <!-- Status badge + actions -->
+                    <div class="d-flex flex-column align-items-end gap-1 flex-shrink-0">
+                        <span class="badge rounded-pill" style="font-size:10px;
+                            <?= $item['status'] === 'available'
+                                ? 'background:#E1F5EE;color:#085041;'
+                                : 'background:#eee;color:#666;' ?>">
+                            <?= $item['status'] === 'available' ? 'Available' : 'Collected' ?>
+                        </span>
+
+                        <div class="d-flex gap-1">
+                            <?php if ($item['status'] === 'available'): ?>
+                                <!-- Mark collected -->
+                                <form method="POST" class="d-inline"
+                                      onsubmit="return confirm('Mark this item as collected by owner?')">
+                                    <input type="hidden" name="action"  value="collect">
+                                    <input type="hidden" name="item_id" value="<?= (int)$item['item_id'] ?>">
+                                    <button class="btn btn-sm"
+                                            style="background:#E1F5EE;color:#085041;border:none;border-radius:6px;padding:3px 8px;font-size:11px;">
+                                        <i class="ti ti-check"></i> Collected
                                     </button>
                                 </form>
-                            </div>
-                        </div>
+                            <?php endif; ?>
 
+                            <!-- Delete -->
+                            <form method="POST" class="d-inline"
+                                  onsubmit="return confirm('Permanently delete this item? This cannot be undone.')">
+                                <input type="hidden" name="action"  value="delete">
+                                <input type="hidden" name="item_id" value="<?= (int)$item['item_id'] ?>">
+                                <button class="btn btn-sm"
+                                        style="background:#FAECE7;color:#993C1D;border:none;border-radius:6px;padding:3px 8px;font-size:11px;">
+                                    <i class="ti ti-trash"></i>
+                                </button>
+                            </form>
+                        </div>
                     </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
+
+                </div>
+            <?php endforeach; ?>
+        <?php endif; ?>
+
+    </div>
+
+    <!-- Audit log link -->
+    <div class="text-center mt-3">
+        <a href="audit.php" class="text-muted" style="font-size:12px;text-decoration:none;">
+            <i class="ti ti-history me-1"></i>View audit log
+        </a>
     </div>
 
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
