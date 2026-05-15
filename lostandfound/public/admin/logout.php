@@ -1,7 +1,8 @@
 <?php
-// ── public/admin/logout.php ─────────────────────────────────
-session_start();
-session_unset();
-session_destroy();
-header("Location: login.php");
-exit;
+// ============================================================
+// public/admin/logout.php
+// Destroys admin session and redirects to login
+// ============================================================
+
+require_once '../../app/admin_auth.php';
+logoutAdmin();

@@ -85,16 +85,12 @@ function getCampusLocations(): array {
     return [
         'Library',
         'Canteen',
-        'Block A',
-        'Block B',
-        'Block C',
-        'Sports Hall',
+        'Multipurpose Hall',
         'Car Park',
-        'Foyer / Reception',
-        'Toilet Block',
+        'Foyer/Reception',
+        'Toilet',
         'Classroom',
-        'Science Lab',
-        'Computer Lab',
+        'PC Lab',
         'Other',
     ];
 }
